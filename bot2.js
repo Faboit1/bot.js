@@ -1,26 +1,78 @@
+// Premium Casino Bot (bot2.js) — Canvas-rendered card games, plinko, roulette, mines & more
+// No manual install needed — auto-installs and auto-rebuilds everything.
+// Create discord.env with DISCORD_TOKEN, CLIENT_ID, GUILD_ID and run: node bot2.js
+
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 const { execSync } = require('child_process');
-try {
-  require('better-sqlite3');
-} catch (e) {
-  if (e.message.includes('NODE_MODULE_VERSION') || e.message.includes('not self-register')) {
-    console.log('⚙ Rebuilding native modules for current Node.js version...');
+
+// ------------------------------------
+// Auto-install & auto-rebuild system
+// ------------------------------------
+const REQUIRED_PACKAGES = ['discord.js', 'better-sqlite3', 'canvas'];
+
+function ensurePackageJson() {
+  const pkgPath = path.join(__dirname, 'package.json');
+  if (!fs.existsSync(pkgPath)) {
+    console.log('⚙ Creating package.json...');
+    fs.writeFileSync(pkgPath, JSON.stringify({
+      name: 'economy-bot',
+      version: '1.0.0',
+      private: true,
+      description: 'Discord economy casino bot',
+    }, null, 2));
+  }
+}
+
+function installMissing() {
+  const missing = REQUIRED_PACKAGES.filter(pkg => {
+    try { require.resolve(pkg); return false; } catch { return true; }
+  });
+  if (missing.length > 0) {
+    ensurePackageJson();
+    console.log(`⚙ Installing missing packages: ${missing.join(', ')}...`);
     try {
-      execSync('npm rebuild better-sqlite3 --update-binary 2>&1', { stdio: 'inherit', timeout: 120000 });
-      execSync('npm rebuild canvas --update-binary 2>&1', { stdio: 'inherit', timeout: 120000 });
-      console.log('✓ Native modules rebuilt successfully');
-    } catch (rebuildErr) {
-      console.error('✗ Rebuild failed:', rebuildErr.message);
-      console.log('Try running: npm rebuild better-sqlite3 canvas');
+      execSync(`npm install ${missing.join(' ')} --save 2>&1`, {
+        stdio: 'inherit',
+        timeout: 300000,
+        cwd: __dirname,
+      });
+      console.log('✓ Packages installed successfully');
+    } catch (err) {
+      console.error('✗ Package installation failed:', err.message);
       process.exit(1);
     }
   }
 }
 
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
-const Database = require('better-sqlite3');
-const { createCanvas } = require('canvas');
+function loadWithAutoRebuild(moduleName) {
+  try {
+    return require(moduleName);
+  } catch (loadErr) {
+    if (loadErr.message.includes('NODE_MODULE_VERSION') || loadErr.message.includes('not self-register')) {
+      console.log(`⚙ Rebuilding ${moduleName} for current Node.js version...`);
+      try {
+        execSync(`npm rebuild ${moduleName} --update-binary 2>&1`, {
+          stdio: 'inherit',
+          timeout: 120000,
+          cwd: __dirname,
+        });
+        console.log(`✓ ${moduleName} rebuilt successfully`);
+        return require(moduleName);
+      } catch (rebuildErr) {
+        console.error(`✗ Rebuild of ${moduleName} failed:`, rebuildErr.message);
+        process.exit(1);
+      }
+    }
+    throw loadErr;
+  }
+}
+
+// Run auto-install then load modules
+installMissing();
+const Database = loadWithAutoRebuild('better-sqlite3');
+const { createCanvas } = loadWithAutoRebuild('canvas');
 const {
   Client,
   GatewayIntentBits,
@@ -1190,7 +1242,7 @@ async function startBlackjack(interaction, bet) {
     dealer: [deck.pop(), deck.pop()],
     playerHands: [{ cards: [deck.pop(), deck.pop()], bet, stood: false, busted: false, doubled: false, resultLabel: '' }],
     activeHand: 0,
-    insuranceAvailable: deck.length >= 0 && (deck[1] || null) !== null && false,
+    insuranceAvailable: false,
     insuranceTaken: false,
     insuranceBet: 0,
     bannerText: 'Place your move',
@@ -1203,7 +1255,6 @@ async function startBlackjack(interaction, bet) {
 
   const playerHand = handValue(state.playerHands[0].cards);
   const dealerUp = cardPoints(state.dealer[0]);
-  const autoPeek = dealerUp !== 10 && dealerUp !== 11;
   const embed = baseGameDescription(interaction, '🃏 Premium Blackjack', `Dealer shows **${state.dealer[0].rank}${state.dealer[0].suit}**.`, Colors.Gold);
   const message = await interaction.editReply(attachmentPayload(drawBlackjackCanvas(state), embed, buildBlackjackRows(state)));
 
@@ -1266,7 +1317,12 @@ async function startBlackjack(interaction, bet) {
     client.activeGames.delete(state.id);
   }
 
-  if (playerHand.blackjack && autoPeek) {
+  if (dealerUp === 10 && handValue(state.dealer).blackjack) {
+    await finishBlackjack('dealer-blackjack');
+    return;
+  }
+
+  if (playerHand.blackjack) {
     await finishBlackjack('natural');
     return;
   }
@@ -1596,7 +1652,7 @@ async function startCrash(interaction, bet) {
 async function showBalance(interaction, target) {
   const user = getUser(interaction.guildId, target.id);
   const nextLevel = xpForLevel(user.level);
-  const embed = themedEmbed('💰 Balance', `${target}\nWallet: **${money(user.balance, interaction.guildId)}**\nBank: **${money(user.bank, interaction.guildId)}**\nLevel: **${user.level}**\nXP: **${user.xp}/${nextLevel}**\nAchievements: **${user.achievements.length}**`, Colors.Gold);
+  const embed = themedEmbed('💰 Balance', `<@${target.id}>\nWallet: **${money(user.balance, interaction.guildId)}**\nBank: **${money(user.bank, interaction.guildId)}**\nLevel: **${user.level}**\nXP: **${user.xp}/${nextLevel}**\nAchievements: **${user.achievements.length}**`, Colors.Gold);
   return interaction.editReply({ embeds: [embed] });
 }
 
@@ -1644,7 +1700,7 @@ async function withdraw(interaction, amount) {
 
 async function showStats(interaction, target) {
   const user = getUser(interaction.guildId, target.id);
-  const embed = themedEmbed('📊 Casino Stats', `${target}\nGames: **${user.games_played}**\nWins/Losses/Pushes: **${user.wins}/${user.losses}/${user.pushes}**\nTotal wagered: **${money(user.total_wagered, interaction.guildId)}**\nProfit won: **${money(user.total_won, interaction.guildId)}**\nLosses absorbed: **${money(user.total_lost, interaction.guildId)}**\nBiggest win: **${money(user.biggest_win, interaction.guildId)}**\nBiggest loss: **${money(user.biggest_loss, interaction.guildId)}**\nAchievements: **${user.achievements.join(', ') || 'None yet'}**`, Colors.Blurple);
+  const embed = themedEmbed('📊 Casino Stats', `<@${target.id}>\nGames: **${user.games_played}**\nWins/Losses/Pushes: **${user.wins}/${user.losses}/${user.pushes}**\nTotal wagered: **${money(user.total_wagered, interaction.guildId)}**\nProfit won: **${money(user.total_won, interaction.guildId)}**\nLosses absorbed: **${money(user.total_lost, interaction.guildId)}**\nBiggest win: **${money(user.biggest_win, interaction.guildId)}**\nBiggest loss: **${money(user.biggest_loss, interaction.guildId)}**\nAchievements: **${user.achievements.join(', ') || 'None yet'}**`, Colors.Blurple);
   await interaction.editReply({ embeds: [embed] });
 }
 
@@ -1670,7 +1726,7 @@ async function handleAdminAdjust(interaction, mode) {
   }
   stmt.addAdminLog.run(interaction.guildId, interaction.user.id, target.id, `admin_${mode}`, `${amount}`);
   const updated = getUser(interaction.guildId, target.id);
-  const embed = themedEmbed('🛠 Admin Economy', `${mode.toUpperCase()} completed for ${target}.\nWallet: **${money(updated.balance, interaction.guildId)}**`, Colors.Orange);
+  const embed = themedEmbed('🛠 Admin Economy', `${mode.toUpperCase()} completed for <@${target.id}>.\nWallet: **${money(updated.balance, interaction.guildId)}**`, Colors.Orange);
   await interaction.editReply({ embeds: [embed] });
 }
 
