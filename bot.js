@@ -2,11 +2,8 @@
 // Single-file Discord.js bot with SQLite persistence, slash commands only,
 // rich interactions, animated message updates, animated images, and admin economy controls.
 //
-// Install:
-//   npm i discord.js better-sqlite3 canvas
-// Node.js 22+ recommended by discord.js.
-//
-// Create a local file next to this script named discord.env:
+// No manual install needed – the bot auto-installs and auto-rebuilds everything.
+// Just create discord.env next to this file:
 //   DISCORD_TOKEN=your_bot_token_here
 //   CLIENT_ID=your_application_client_id
 //   GUILD_ID=optional_test_guild_id
@@ -19,8 +16,74 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const Database = require('better-sqlite3');
-const { createCanvas } = require('canvas');
+const { execSync } = require('child_process');
+
+// ------------------------------------
+// Auto-install & auto-rebuild system
+// ------------------------------------
+const REQUIRED_PACKAGES = ['discord.js', 'better-sqlite3', 'canvas'];
+
+function ensurePackageJson() {
+  const pkgPath = path.join(__dirname, 'package.json');
+  if (!fs.existsSync(pkgPath)) {
+    console.log('⚙ Creating package.json...');
+    fs.writeFileSync(pkgPath, JSON.stringify({
+      name: 'economy-bot',
+      version: '1.0.0',
+      private: true,
+      description: 'Discord economy casino bot',
+    }, null, 2));
+  }
+}
+
+function installMissing() {
+  const missing = REQUIRED_PACKAGES.filter(pkg => {
+    try { require.resolve(pkg); return false; } catch { return true; }
+  });
+  if (missing.length > 0) {
+    ensurePackageJson();
+    console.log(`⚙ Installing missing packages: ${missing.join(', ')}...`);
+    try {
+      execSync(`npm install ${missing.join(' ')} --save 2>&1`, {
+        stdio: 'inherit',
+        timeout: 300000,
+        cwd: __dirname,
+      });
+      console.log('✓ Packages installed successfully');
+    } catch (err) {
+      console.error('✗ Package installation failed:', err.message);
+      process.exit(1);
+    }
+  }
+}
+
+function loadWithAutoRebuild(moduleName) {
+  try {
+    return require(moduleName);
+  } catch (loadErr) {
+    if (loadErr.message.includes('NODE_MODULE_VERSION') || loadErr.message.includes('not self-register')) {
+      console.log(`⚙ Rebuilding ${moduleName} for current Node.js version...`);
+      try {
+        execSync(`npm rebuild ${moduleName} --update-binary 2>&1`, {
+          stdio: 'inherit',
+          timeout: 120000,
+          cwd: __dirname,
+        });
+        console.log(`✓ ${moduleName} rebuilt successfully`);
+        return require(moduleName);
+      } catch (rebuildErr) {
+        console.error(`✗ Rebuild of ${moduleName} failed:`, rebuildErr.message);
+        process.exit(1);
+      }
+    }
+    throw loadErr;
+  }
+}
+
+// Run auto-install then load modules
+installMissing();
+const Database = loadWithAutoRebuild('better-sqlite3');
+const { createCanvas } = loadWithAutoRebuild('canvas');
 const {
   Client,
   GatewayIntentBits,
@@ -302,29 +365,138 @@ client.cooldowns = new Collection();
 client.activeGames = new Collection();
 
 // ------------------------------
+// Canvas helpers
+// ------------------------------
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function drawGradientBg(ctx, w, h, colorTop, colorBot) {
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, colorTop);
+  grad.addColorStop(1, colorBot);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+}
+
+function drawCard(ctx, x, y, value, suit, faceDown = false) {
+  const cw = 65, ch = 90, r = 8;
+  roundRect(ctx, x, y, cw, ch, r);
+  if (faceDown) {
+    ctx.fillStyle = '#1a5276';
+    ctx.fill();
+    ctx.strokeStyle = '#2980b9';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // Pattern
+    ctx.fillStyle = '#2471a3';
+    for (let py = y + 8; py < y + ch - 8; py += 6) {
+      for (let px = x + 8; px < x + cw - 8; px += 6) {
+        ctx.fillRect(px, py, 3, 3);
+      }
+    }
+    return;
+  }
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+  ctx.strokeStyle = '#bdc3c7';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  const isRed = suit === '♥' || suit === '♦';
+  ctx.fillStyle = isRed ? '#e74c3c' : '#2c3e50';
+  ctx.font = 'bold 16px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText(value, x + 5, y + 18);
+  ctx.fillText(suit, x + 5, y + 34);
+  ctx.font = 'bold 28px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(suit, x + cw / 2, y + ch / 2 + 10);
+}
+
+const CARD_VALUES = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+const CARD_SUITS = ['♠', '♥', '♦', '♣'];
+
+function randomCard() {
+  return { value: CARD_VALUES[rand(0, 12)], suit: CARD_SUITS[rand(0, 3)] };
+}
+
+function cardNumericValue(card) {
+  if (card.value === 'A') return 11;
+  if (['K', 'Q', 'J'].includes(card.value)) return 10;
+  return parseInt(card.value);
+}
+
+function handValue(cards) {
+  let total = cards.reduce((s, c) => s + cardNumericValue(c), 0);
+  let aces = cards.filter(c => c.value === 'A').length;
+  while (total > 21 && aces > 0) { total -= 10; aces--; }
+  return total;
+}
+
+// ------------------------------
 // Canvas Animation Generators
 // ------------------------------
 function createCoinFlipAnimation(outcome, guess, win) {
   const frames = [];
-  const width = 400, height = 300;
-  const states = ['🪙', '🪙↩️', '🪙🎯', '💥'];
-  
-  for (let i = 0; i < states.length; i++) {
+  const width = 400, height = 280;
+
+  for (let i = 0; i < 5; i++) {
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
-    
-    ctx.fillStyle = win ? '#2ecc71' : '#e74c3c';
-    ctx.fillRect(0, 0, width, height);
-    
-    ctx.font = 'bold 120px Arial';
-    ctx.fillStyle = 'white';
+    drawGradientBg(ctx, width, height, '#1a1a2e', '#16213e');
+
+    // Coin
+    const cx = width / 2, cy = 110;
+    const coinRadius = 50;
+    const scaleX = i < 3 ? Math.abs(Math.cos((i / 3) * Math.PI)) : 1;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(scaleX || 0.1, 1);
+    ctx.beginPath();
+    ctx.arc(0, 0, coinRadius, 0, Math.PI * 2);
+    const coinGrad = ctx.createRadialGradient(-15, -15, 10, 0, 0, coinRadius);
+    coinGrad.addColorStop(0, '#f9e547');
+    coinGrad.addColorStop(1, '#d4a017');
+    ctx.fillStyle = coinGrad;
+    ctx.fill();
+    ctx.strokeStyle = '#b8860b';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    if (i >= 3) {
+      ctx.fillStyle = '#b8860b';
+      ctx.font = 'bold 28px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText(outcome === 'heads' ? 'H' : 'T', 0, 10);
+    }
+    ctx.restore();
+
+    // Result text
+    ctx.font = 'bold 22px Arial';
+    ctx.fillStyle = '#ecf0f1';
     ctx.textAlign = 'center';
-    ctx.fillText(states[i], width / 2, 120);
-    
-    ctx.font = '28px Arial';
-    ctx.fillText(`Outcome: ${outcome.toUpperCase()}`, width / 2, 200);
-    ctx.fillText(`You guessed: ${guess.toUpperCase()}`, width / 2, 240);
-    
+    if (i >= 3) {
+      ctx.fillText(`${outcome.toUpperCase()}!`, width / 2, 195);
+      ctx.font = '16px Arial';
+      ctx.fillStyle = '#95a5a6';
+      ctx.fillText(`You guessed: ${guess.toUpperCase()}`, width / 2, 220);
+      ctx.font = 'bold 24px Arial';
+      ctx.fillStyle = win ? '#2ecc71' : '#e74c3c';
+      ctx.fillText(win ? '✨ YOU WIN!' : '💔 YOU LOSE', width / 2, 260);
+    } else {
+      ctx.fillStyle = '#f39c12';
+      ctx.fillText('Flipping...', width / 2, 200);
+    }
+
     frames.push(canvas.toBuffer('image/png'));
   }
   return frames;
@@ -332,30 +504,43 @@ function createCoinFlipAnimation(outcome, guess, win) {
 
 function createDiceAnimation(roll, target, win) {
   const frames = [];
-  const width = 400, height = 300;
-  
+  const width = 400, height = 280;
+
   for (let frame = 0; frame < 5; frame++) {
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
-    
-    ctx.fillStyle = win ? '#2ecc71' : '#e74c3c';
-    ctx.fillRect(0, 0, width, height);
-    
-    ctx.fillStyle = 'white';
-    ctx.font = 'bold 100px Arial';
+    drawGradientBg(ctx, width, height, '#0f3460', '#16213e');
+
+    const diceSize = 80;
+    const dx = width / 2 - diceSize / 2, dy = 50;
+    roundRect(ctx, dx, dy, diceSize, diceSize, 10);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = '#bdc3c7';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    const displayNum = frame < 3 ? rand(1, 6) : roll;
+    ctx.fillStyle = '#2c3e50';
+    ctx.font = 'bold 42px Arial';
     ctx.textAlign = 'center';
-    
-    if (frame < 3) {
-      const dice = [1, 2, 3, 4, 5, 6][Math.floor(Math.random() * 6)];
-      ctx.fillText(`🎲 ${dice}`, width / 2, 130);
+    ctx.fillText(String(displayNum), width / 2, dy + 55);
+
+    if (frame >= 3) {
+      ctx.font = '18px Arial';
+      ctx.fillStyle = '#95a5a6';
+      ctx.fillText(`You picked: ${target}  |  Rolled: ${roll}`, width / 2, 175);
+      ctx.font = 'bold 26px Arial';
+      ctx.fillStyle = win ? '#2ecc71' : '#e74c3c';
+      ctx.fillText(win ? '🎯 EXACT MATCH!' : '❌ No match', width / 2, 215);
+      ctx.font = '14px Arial';
+      ctx.fillStyle = '#7f8c8d';
+      ctx.fillText(win ? 'Big payout! 5.5x multiplier' : 'Better luck next time', width / 2, 250);
     } else {
-      ctx.fillText(`🎲 ${roll}`, width / 2, 130);
+      ctx.font = '20px Arial';
+      ctx.fillStyle = '#f39c12';
+      ctx.fillText('🎲 Rolling...', width / 2, 180);
     }
-    
-    ctx.font = '24px Arial';
-    ctx.fillText(`Target: ${target} | Result: ${roll}`, width / 2, 220);
-    ctx.fillText(win ? 'WINNER!' : 'BETTER LUCK NEXT TIME', width / 2, 260);
-    
     frames.push(canvas.toBuffer('image/png'));
   }
   return frames;
@@ -363,38 +548,66 @@ function createDiceAnimation(roll, target, win) {
 
 function createSlotAnimation(reels, win) {
   const frames = [];
-  const width = 500, height = 300;
+  const width = 500, height = 280;
   const symbols = ['🍒', '🍋', '🍇', '🍉', '7️⃣', '💎', '⭐'];
-  
+
   for (let frame = 0; frame < 6; frame++) {
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
-    
-    ctx.fillStyle = win ? '#2ecc71' : '#e74c3c';
-    ctx.fillRect(0, 0, width, height);
-    
-    ctx.fillStyle = '#1a1a1a';
-    ctx.fillRect(100, 50, 300, 200);
-    
-    ctx.strokeStyle = 'gold';
+    drawGradientBg(ctx, width, height, '#1a1a2e', '#0f0f23');
+
+    // Machine border
+    roundRect(ctx, 60, 30, 380, 160, 15);
+    ctx.fillStyle = '#2c3e50';
+    ctx.fill();
+    ctx.strokeStyle = '#f1c40f';
     ctx.lineWidth = 3;
-    ctx.strokeRect(100, 50, 300, 200);
-    
-    ctx.font = 'bold 80px Arial';
+    ctx.stroke();
+
+    // Inner reel areas
+    for (let r = 0; r < 3; r++) {
+      const rx = 90 + r * 120;
+      roundRect(ctx, rx, 50, 100, 120, 8);
+      ctx.fillStyle = '#1a1a1a';
+      ctx.fill();
+      ctx.strokeStyle = '#555';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    ctx.font = 'bold 55px Arial';
     ctx.textAlign = 'center';
     ctx.fillStyle = 'white';
-    
-    const displayReels = frame < 4 
-      ? [symbols[Math.floor(Math.random() * symbols.length)], symbols[Math.floor(Math.random() * symbols.length)], symbols[Math.floor(Math.random() * symbols.length)]]
-      : reels;
-    
-    ctx.fillText(displayReels[0], 150, 160);
-    ctx.fillText(displayReels[1], 250, 160);
-    ctx.fillText(displayReels[2], 350, 160);
-    
-    ctx.font = '24px Arial';
-    ctx.fillText(win ? '🎉 JACKPOT!' : 'NO MATCH', width / 2, 280);
-    
+
+    const stopped = frame >= 4;
+    const displayReels = stopped
+      ? reels
+      : reels.map((_, idx) => frame >= idx + 1 ? reels[idx] : symbols[Math.floor(Math.random() * symbols.length)]);
+
+    for (let r = 0; r < 3; r++) {
+      ctx.fillText(displayReels[r], 140 + r * 120, 128);
+    }
+
+    // Win line
+    if (stopped && win) {
+      ctx.strokeStyle = '#2ecc71';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(90, 110);
+      ctx.lineTo(450, 110);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    ctx.font = 'bold 22px Arial';
+    ctx.fillStyle = win ? '#2ecc71' : (stopped ? '#e74c3c' : '#f39c12');
+    ctx.fillText(stopped ? (win ? '🎉 JACKPOT!' : 'No match') : '⏳ Spinning...', width / 2, 230);
+    if (stopped) {
+      ctx.font = '14px Arial';
+      ctx.fillStyle = '#7f8c8d';
+      ctx.fillText(win ? 'Triple match bonus!' : 'Try again for a triple match', width / 2, 260);
+    }
     frames.push(canvas.toBuffer('image/png'));
   }
   return frames;
@@ -403,87 +616,143 @@ function createSlotAnimation(reels, win) {
 function createCrashAnimation(crashPoint, cashout, didSurvive) {
   const frames = [];
   const width = 500, height = 300;
-  
-  for (let frame = 0; frame < 6; frame++) {
+
+  for (let frame = 0; frame < 7; frame++) {
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
-    
-    ctx.fillStyle = didSurvive ? '#2ecc71' : '#e74c3c';
-    ctx.fillRect(0, 0, width, height);
-    
-    ctx.strokeStyle = 'white';
+    drawGradientBg(ctx, width, height, '#0f0f23', '#1a1a2e');
+
+    // Grid
+    ctx.strokeStyle = '#1e2d3d';
+    ctx.lineWidth = 0.5;
+    for (let gx = 50; gx <= 450; gx += 50) { ctx.beginPath(); ctx.moveTo(gx, 20); ctx.lineTo(gx, 250); ctx.stroke(); }
+    for (let gy = 20; gy <= 250; gy += 40) { ctx.beginPath(); ctx.moveTo(50, gy); ctx.lineTo(450, gy); ctx.stroke(); }
+
+    // Axes
+    ctx.strokeStyle = '#34495e';
     ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(50, 250); ctx.lineTo(450, 250); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(50, 250); ctx.lineTo(50, 20); ctx.stroke();
+
+    // Curve
+    const progress = Math.min(1, frame / 5);
+    const maxMult = Number(crashPoint);
     ctx.beginPath();
     ctx.moveTo(50, 250);
-    
-    const progress = frame / 5;
-    for (let i = 0; i <= progress; i += 0.05) {
-      const x = 50 + i * 400;
-      const y = 250 - Math.pow(i, 1.5) * 150;
-      ctx.lineTo(x, y);
+    ctx.strokeStyle = didSurvive ? '#2ecc71' : '#e74c3c';
+    ctx.lineWidth = 3;
+    for (let t = 0; t <= progress; t += 0.01) {
+      const mult = 1 + t * (maxMult - 1);
+      const x = 50 + t * 400;
+      const y = 250 - ((mult - 1) / Math.max(maxMult - 1, 1)) * 200;
+      ctx.lineTo(x, Math.max(20, y));
     }
     ctx.stroke();
-    
-    const currentMultiplier = 1 + progress * (crashPoint - 1);
-    ctx.font = 'bold 48px Arial';
-    ctx.fillStyle = 'white';
+
+    // Crash point marker
+    if (frame >= 5) {
+      const crashX = 450, crashY = 20;
+      ctx.beginPath();
+      ctx.arc(crashX, crashY, 8, 0, Math.PI * 2);
+      ctx.fillStyle = '#e74c3c';
+      ctx.fill();
+    }
+
+    const currentMult = 1 + progress * (maxMult - 1);
+    ctx.font = 'bold 36px Arial';
+    ctx.fillStyle = frame >= 5 ? (didSurvive ? '#2ecc71' : '#e74c3c') : '#f1c40f';
     ctx.textAlign = 'center';
-    ctx.fillText(`x${currentMultiplier.toFixed(2)}`, width / 2, 100);
-    
-    ctx.font = '20px Arial';
-    ctx.fillText(`Cashout target: x${cashout}`, width / 2, 150);
-    ctx.fillText(`Crash at: x${crashPoint}`, width / 2, 180);
-    
+    ctx.fillText(`×${currentMult.toFixed(2)}`, width / 2, 285);
+
+    if (frame >= 5) {
+      ctx.font = 'bold 20px Arial';
+      ctx.fillStyle = didSurvive ? '#2ecc71' : '#e74c3c';
+      ctx.fillText(didSurvive ? `✅ Cashed out at ×${cashout}` : `💥 CRASHED at ×${crashPoint}`, width / 2, 16);
+    }
     frames.push(canvas.toBuffer('image/png'));
   }
   return frames;
 }
 
-function createWheelAnimation(result, frames_count = 6) {
+function createWheelAnimation(result, frameCount = 8) {
   const frames = [];
   const width = 400, height = 400;
-  const sections = ['x0', 'x1', 'x2', 'x5', 'x10', 'Jackpot!'];
-  
-  for (let frame = 0; frame < frames_count; frame++) {
+  const sections = [
+    { label: 'x0', color: '#e74c3c' },
+    { label: 'x1', color: '#e67e22' },
+    { label: 'x2', color: '#f1c40f' },
+    { label: 'x5', color: '#2ecc71' },
+    { label: 'x10', color: '#3498db' },
+    { label: 'JACKPOT', color: '#9b59b6' },
+  ];
+
+  for (let frame = 0; frame < frameCount; frame++) {
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
-    
-    ctx.fillStyle = '#1a1a1a';
-    ctx.fillRect(0, 0, width, height);
-    
-    const centerX = width / 2;
-    const centerY = height / 2;
+    drawGradientBg(ctx, width, height, '#0f0f23', '#1a1a2e');
+
+    const cx = width / 2, cy = height / 2 + 10;
     const radius = 150;
-    const rotation = (frame / frames_count) * Math.PI * 2;
-    
+    // Decelerate rotation
+    const speed = Math.max(0.2, 1 - frame / frameCount);
+    const rotation = frame * speed * 1.3;
+
     for (let i = 0; i < sections.length; i++) {
       const angle = (i / sections.length) * Math.PI * 2 + rotation;
+      const nextAngle = angle + Math.PI * 2 / sections.length;
       ctx.beginPath();
-      ctx.moveTo(centerX, centerY);
-      ctx.arc(centerX, centerY, radius, angle, angle + (Math.PI * 2 / sections.length));
-      ctx.fillStyle = ['#e74c3c', '#f39c12', '#2ecc71', '#3498db', '#9b59b6', '#1abc9c'][i];
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, radius, angle, nextAngle);
+      ctx.fillStyle = sections[i].color;
       ctx.fill();
-      
-      ctx.strokeStyle = 'white';
+      ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 2;
       ctx.stroke();
-      
-      const textAngle = angle + (Math.PI / sections.length);
-      const textX = centerX + Math.cos(textAngle) * 100;
-      const textY = centerY + Math.sin(textAngle) * 100;
+
+      const textAngle = angle + Math.PI / sections.length;
+      const tx = cx + Math.cos(textAngle) * 95;
+      const ty = cy + Math.sin(textAngle) * 95;
+      ctx.save();
+      ctx.translate(tx, ty);
+      ctx.rotate(textAngle + Math.PI / 2);
       ctx.fillStyle = 'white';
-      ctx.font = 'bold 16px Arial';
+      ctx.font = 'bold 15px Arial';
       ctx.textAlign = 'center';
-      ctx.fillText(sections[i], textX, textY);
+      ctx.fillText(sections[i].label, 0, 0);
+      ctx.restore();
     }
-    
-    ctx.fillStyle = 'gold';
+
+    // Center hub
     ctx.beginPath();
-    ctx.moveTo(centerX - 10, 20);
-    ctx.lineTo(centerX + 10, 20);
-    ctx.lineTo(centerX, 40);
+    ctx.arc(cx, cy, 20, 0, Math.PI * 2);
+    const hubGrad = ctx.createRadialGradient(cx - 5, cy - 5, 3, cx, cy, 20);
+    hubGrad.addColorStop(0, '#f9e547');
+    hubGrad.addColorStop(1, '#d4a017');
+    ctx.fillStyle = hubGrad;
     ctx.fill();
-    
+
+    // Pointer
+    ctx.fillStyle = '#f1c40f';
+    ctx.beginPath();
+    ctx.moveTo(cx - 12, 25);
+    ctx.lineTo(cx + 12, 25);
+    ctx.lineTo(cx, 50);
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Title
+    ctx.font = 'bold 20px Arial';
+    ctx.fillStyle = '#ecf0f1';
+    ctx.textAlign = 'center';
+    ctx.fillText('🎡 WHEEL OF FORTUNE', cx, 18);
+
+    if (frame === frameCount - 1) {
+      ctx.font = 'bold 18px Arial';
+      ctx.fillStyle = '#f1c40f';
+      ctx.fillText(`Result: ${result}`, cx, height - 15);
+    }
     frames.push(canvas.toBuffer('image/png'));
   }
   return frames;
@@ -492,48 +761,70 @@ function createWheelAnimation(result, frames_count = 6) {
 function createTreasureAnimation(spots, treasureCount, win) {
   const frames = [];
   const width = 400, height = 400;
-  
+
   for (let reveal = 0; reveal <= 9; reveal++) {
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
-    
-    ctx.fillStyle = win ? '#2ecc71' : '#8b7355';
-    ctx.fillRect(0, 0, width, height);
-    
-    ctx.font = 'bold 32px Arial';
-    ctx.fillStyle = 'white';
+    drawGradientBg(ctx, width, height, '#1a0a2e', '#2d1b4e');
+
+    ctx.font = 'bold 24px Arial';
+    ctx.fillStyle = '#f1c40f';
     ctx.textAlign = 'center';
-    ctx.fillText('Treasure Hunt', width / 2, 50);
-    
-    ctx.font = '60px Arial';
+    ctx.fillText('💎 Treasure Hunt', width / 2, 35);
+
     const cellSize = 80;
-    const startX = (width - cellSize * 3 - 20) / 2;
-    const startY = 120;
-    
+    const gap = 12;
+    const startX = (width - cellSize * 3 - gap * 2) / 2;
+    const startY = 55;
+
     for (let i = 0; i < 9; i++) {
       const row = Math.floor(i / 3);
       const col = i % 3;
-      const x = startX + col * (cellSize + 10);
-      const y = startY + row * (cellSize + 10);
-      
-      ctx.fillStyle = '#34495e';
-      ctx.fillRect(x, y, cellSize, cellSize);
-      ctx.strokeStyle = 'gold';
-      ctx.lineWidth = 3;
-      ctx.strokeRect(x, y, cellSize, cellSize);
-      
+      const x = startX + col * (cellSize + gap);
+      const y = startY + row * (cellSize + gap);
+
+      roundRect(ctx, x, y, cellSize, cellSize, 10);
       if (i < reveal) {
+        const isTreasure = spots[i] === '💎';
+        ctx.fillStyle = isTreasure ? '#2ecc71' : '#34495e';
+        ctx.fill();
+        ctx.strokeStyle = isTreasure ? '#27ae60' : '#555';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.font = '40px Arial';
         ctx.fillStyle = 'white';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(spots[i], x + cellSize / 2, y + cellSize / 2);
+        ctx.textBaseline = 'alphabetic';
+      } else {
+        ctx.fillStyle = '#4a3072';
+        ctx.fill();
+        ctx.strokeStyle = '#7d3cff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.font = '30px Arial';
+        ctx.fillStyle = '#9b59b6';
+        ctx.textAlign = 'center';
+        ctx.fillText('?', x + cellSize / 2, y + cellSize / 2 + 10);
       }
     }
-    
-    ctx.font = '20px Arial';
-    ctx.fillStyle = 'white';
-    ctx.fillText(`Treasures: ${treasureCount}`, width / 2, 380);
-    
+
+    ctx.font = '18px Arial';
+    ctx.fillStyle = '#ecf0f1';
+    ctx.textAlign = 'center';
+    if (reveal >= 9) {
+      ctx.font = 'bold 20px Arial';
+      ctx.fillStyle = win ? '#2ecc71' : '#e74c3c';
+      ctx.fillText(`${treasureCount} treasure${treasureCount !== 1 ? 's' : ''} found! ${win ? '💰' : ''}`, width / 2, 355);
+    } else {
+      ctx.fillStyle = '#95a5a6';
+      ctx.fillText('Revealing tiles...', width / 2, 355);
+    }
+    ctx.font = '13px Arial';
+    ctx.fillStyle = '#7f8c8d';
+    ctx.fillText('Each 💎 multiplies your bet!', width / 2, 385);
+
     frames.push(canvas.toBuffer('image/png'));
   }
   return frames;
@@ -541,26 +832,172 @@ function createTreasureAnimation(spots, treasureCount, win) {
 
 function createHighLowAnimation(first, second, guess, win) {
   const frames = [];
-  const width = 500, height = 300;
-  
+  const width = 500, height = 280;
+  const suits = CARD_SUITS;
+
+  const firstSuit = suits[rand(0, 3)];
+  const secondSuit = suits[rand(0, 3)];
+  const firstLabel = CARD_VALUES[first - 1] || String(first);
+  const secondLabel = CARD_VALUES[second - 1] || String(second);
+
   for (let frame = 0; frame < 5; frame++) {
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
-    
-    ctx.fillStyle = win ? '#2ecc71' : '#e74c3c';
-    ctx.fillRect(0, 0, width, height);
-    
-    ctx.font = 'bold 48px Arial';
-    ctx.fillStyle = 'white';
+    drawGradientBg(ctx, width, height, '#0d2137', '#132743');
+
+    ctx.font = 'bold 20px Arial';
+    ctx.fillStyle = '#f1c40f';
     ctx.textAlign = 'center';
-    
-    ctx.fillText('🂠 ' + first, 150, 120);
-    ctx.fillText(frame < 3 ? '❓' : '🂠 ' + second, 350, 120);
-    
-    ctx.font = '24px Arial';
-    ctx.fillText(`You guessed: ${guess}`, width / 2, 200);
-    ctx.fillText(win ? 'CORRECT!' : 'WRONG!', width / 2, 240);
-    
+    ctx.fillText('Higher or Lower?', width / 2, 28);
+
+    // First card (always visible)
+    drawCard(ctx, 130, 50, firstLabel, firstSuit, false);
+
+    // VS text
+    ctx.font = 'bold 22px Arial';
+    ctx.fillStyle = '#e74c3c';
+    ctx.fillText('VS', width / 2, 100);
+
+    // Second card (face down then revealed)
+    if (frame < 3) {
+      drawCard(ctx, 305, 50, secondLabel, secondSuit, true);
+    } else {
+      drawCard(ctx, 305, 50, secondLabel, secondSuit, false);
+    }
+
+    if (frame >= 3) {
+      ctx.font = '16px Arial';
+      ctx.fillStyle = '#95a5a6';
+      ctx.textAlign = 'center';
+      ctx.fillText(`You guessed: ${guess.toUpperCase()}`, width / 2, 175);
+      ctx.font = 'bold 24px Arial';
+      ctx.fillStyle = win ? '#2ecc71' : '#e74c3c';
+      ctx.fillText(win ? '✅ CORRECT!' : '❌ WRONG!', width / 2, 210);
+      ctx.font = '14px Arial';
+      ctx.fillStyle = '#7f8c8d';
+      ctx.fillText(`${firstLabel} → ${secondLabel}  (${second > first ? 'Higher' : second < first ? 'Lower' : 'Equal'})`, width / 2, 245);
+    } else {
+      ctx.font = '18px Arial';
+      ctx.fillStyle = '#f39c12';
+      ctx.fillText('Revealing...', width / 2, 200);
+    }
+    frames.push(canvas.toBuffer('image/png'));
+  }
+  return frames;
+}
+
+function createBlackjackImage(playerCards, dealerCards, hideDealer, playerTotal, dealerTotal, status) {
+  const width = 550, height = 340;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  drawGradientBg(ctx, width, height, '#0b6623', '#0a4f1c');
+
+  // Table felt texture
+  ctx.fillStyle = 'rgba(0,0,0,0.1)';
+  roundRect(ctx, 10, 10, width - 20, height - 20, 20);
+  ctx.fill();
+  ctx.strokeStyle = '#d4af37';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  // Dealer label
+  ctx.font = 'bold 16px Arial';
+  ctx.fillStyle = '#f1c40f';
+  ctx.textAlign = 'left';
+  ctx.fillText(`DEALER${hideDealer ? '' : ` (${dealerTotal})`}`, 20, 35);
+
+  // Dealer cards
+  const dealerStartX = 20;
+  for (let i = 0; i < dealerCards.length; i++) {
+    const card = dealerCards[i];
+    drawCard(ctx, dealerStartX + i * 75, 45, card.value, card.suit, hideDealer && i === 1);
+  }
+
+  // Divider
+  ctx.strokeStyle = '#d4af37';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([8, 4]);
+  ctx.beginPath();
+  ctx.moveTo(20, 160);
+  ctx.lineTo(width - 20, 160);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Player label
+  ctx.font = 'bold 16px Arial';
+  ctx.fillStyle = '#3498db';
+  ctx.textAlign = 'left';
+  ctx.fillText(`YOU (${playerTotal})`, 20, 185);
+
+  // Player cards
+  const playerStartX = 20;
+  for (let i = 0; i < playerCards.length; i++) {
+    const card = playerCards[i];
+    drawCard(ctx, playerStartX + i * 75, 195, card.value, card.suit, false);
+  }
+
+  // Status banner
+  if (status) {
+    roundRect(ctx, width / 2 - 120, height - 45, 240, 32, 8);
+    const statusColor = status.includes('WIN') || status.includes('BLACKJACK') ? '#2ecc71'
+      : status.includes('BUST') || status.includes('LOSE') ? '#e74c3c'
+      : '#f39c12';
+    ctx.fillStyle = statusColor;
+    ctx.fill();
+    ctx.font = 'bold 16px Arial';
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.fillText(status, width / 2, height - 24);
+  }
+
+  return canvas.toBuffer('image/png');
+}
+
+function createRPSAnimation(playerChoice, botChoice, result) {
+  const frames = [];
+  const width = 450, height = 250;
+  const rpsEmojis = { rock: '✊', paper: '✋', scissors: '✌️' };
+
+  for (let frame = 0; frame < 4; frame++) {
+    const canvas = createCanvas(width, height);
+    const ctx = canvas.getContext('2d');
+    drawGradientBg(ctx, width, height, '#1a1a2e', '#16213e');
+
+    ctx.font = 'bold 20px Arial';
+    ctx.fillStyle = '#f1c40f';
+    ctx.textAlign = 'center';
+    ctx.fillText('Rock Paper Scissors', width / 2, 30);
+
+    // Player side
+    ctx.font = '60px Arial';
+    ctx.fillText(rpsEmojis[playerChoice], 110, 120);
+    ctx.font = '14px Arial';
+    ctx.fillStyle = '#3498db';
+    ctx.fillText('YOU', 110, 150);
+
+    // VS
+    ctx.font = 'bold 28px Arial';
+    ctx.fillStyle = '#e74c3c';
+    ctx.fillText('VS', width / 2, 110);
+
+    // Bot side
+    ctx.font = '60px Arial';
+    ctx.fillStyle = '#ecf0f1';
+    if (frame < 2) {
+      const options = ['✊', '✋', '✌️'];
+      ctx.fillText(options[frame % 3], 340, 120);
+    } else {
+      ctx.fillText(rpsEmojis[botChoice], 340, 120);
+    }
+    ctx.font = '14px Arial';
+    ctx.fillStyle = '#e74c3c';
+    ctx.fillText('BOT', 340, 150);
+
+    if (frame >= 2) {
+      ctx.font = 'bold 24px Arial';
+      ctx.fillStyle = result === 'win' ? '#2ecc71' : result === 'push' ? '#f39c12' : '#e74c3c';
+      ctx.fillText(result === 'win' ? '🎉 YOU WIN!' : result === 'push' ? '🤝 TIE!' : '💔 YOU LOSE', width / 2, 210);
+    }
     frames.push(canvas.toBuffer('image/png'));
   }
   return frames;
@@ -1113,22 +1550,22 @@ async function showRPS(interaction, bet, guess) {
   const result = guess === bot ? 'push' : (guess === 'rock' && bot === 'scissors') || (guess === 'paper' && bot === 'rock') || (guess === 'scissors' && bot === 'paper') ? 'win' : 'lose';
   const payout = result === 'win' ? Math.floor(bet * 2 * economyMultiplier(interaction.guildId)) : result === 'push' ? bet : 0;
   const currency = getCurrency(interaction.guildId, getGuildSettings(interaction.guildId).currency_id);
-  
+
   if (getWallet(interaction.guildId, interaction.user.id, currency.currency_id).balance < bet) {
     return interaction.reply({ ephemeral: true, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
   }
-  
+
   const net = payout - bet;
   addBalance(interaction.guildId, interaction.user.id, net, currency.currency_id, 'game', `rps:${result}`);
   registerStatTrigger(interaction.guildId, interaction.user.id, result === 'win' ? 'wins' : 'losses');
-  
-  const rpsEmojis = { rock: '✊', paper: '✋', scissors: '✌️' };
+
   const color = result === 'win' ? Colors.Green : result === 'push' ? Colors.Yellow : Colors.Red;
-  const embed = baseEmbed('✊ Rock Paper Scissors', 
-    `You: **${guess.toUpperCase()}** ${rpsEmojis[guess]}\nBot: **${bot.toUpperCase()}** ${rpsEmojis[bot]}\nResult: **${result.toUpperCase()}**\nBalance: ${moneyStr(getWallet(interaction.guildId, interaction.user.id, currency.currency_id).balance, currency)}`,
+  const embed = baseEmbed('✊ Rock Paper Scissors',
+    `You: **${guess.toUpperCase()}** | Bot: **${bot.toUpperCase()}**\nResult: **${result.toUpperCase()}**\nPayout: ${moneyStr(payout, currency)}\nBalance: ${moneyStr(getWallet(interaction.guildId, interaction.user.id, currency.currency_id).balance, currency)}`,
     color);
-  
-  await replySafe(interaction, { embeds: [embed] });
+
+  const imageFrames = createRPSAnimation(guess, bot, result);
+  await animateWithImages(interaction, imageFrames, embed, 500);
 }
 
 async function showLimbo(interaction, bet, target) {
@@ -1211,54 +1648,185 @@ async function showLottery(interaction, bet) {
 }
 
 // ------------------------------
+// Interactive Blackjack
+// ------------------------------
+async function showBlackjack(interaction, bet) {
+  const guildId = interaction.guildId;
+  const userId = interaction.user.id;
+  const currency = getCurrency(guildId, getGuildSettings(guildId).currency_id);
+  const wallet = getWallet(guildId, userId, currency.currency_id);
+
+  if (wallet.balance < bet) {
+    return interaction.reply({ ephemeral: true, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
+  }
+
+  addBalance(guildId, userId, -bet, currency.currency_id, 'game', 'blackjack:bet');
+  incrementStat(guildId, userId, 'games_played');
+  incrementStat(guildId, userId, 'bet_total', bet);
+
+  const playerCards = [randomCard(), randomCard()];
+  const dealerCards = [randomCard(), randomCard()];
+  const gameKey = `bj:${guildId}:${userId}`;
+
+  const buildMessage = (status, hideDealer) => {
+    const pVal = handValue(playerCards);
+    const dVal = hideDealer ? cardNumericValue(dealerCards[0]) : handValue(dealerCards);
+    const img = createBlackjackImage(playerCards, dealerCards, hideDealer, pVal, dVal, status);
+    const attachment = new AttachmentBuilder(img, { name: 'blackjack.png' });
+
+    const embed = baseEmbed('🃏 Blackjack',
+      `Bet: ${moneyStr(bet, currency)}` + (status ? `\n**${status}**` : ''),
+      status?.includes('WIN') || status?.includes('BLACKJACK') ? Colors.Green
+        : status?.includes('BUST') || status?.includes('LOSE') ? Colors.Red
+        : status?.includes('PUSH') ? Colors.Yellow : Colors.Blurple);
+    embed.setImage('attachment://blackjack.png');
+
+    const row = new ActionRowBuilder();
+    if (!status) {
+      row.addComponents(
+        new ButtonBuilder().setCustomId(`bj_hit_${userId}`).setLabel('🃏 Hit').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`bj_stand_${userId}`).setLabel('✋ Stand').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`bj_double_${userId}`).setLabel('⬆️ Double').setStyle(ButtonStyle.Danger)
+          .setDisabled(wallet.balance < bet * 2 || playerCards.length > 2),
+      );
+    }
+    return { embeds: [embed], files: [attachment], components: status ? [] : [row] };
+  };
+
+  // Check instant blackjack
+  if (handValue(playerCards) === 21) {
+    const payout = Math.floor(bet * 2.5 * economyMultiplier(guildId));
+    addBalance(guildId, userId, payout, currency.currency_id, 'game', 'blackjack:blackjack');
+    registerStatTrigger(guildId, userId, 'wins');
+    unlockAchievement(guildId, userId, 'first_win');
+    return replySafe(interaction, buildMessage(`🎰 BLACKJACK! +${moneyStr(payout, currency)}`, false));
+  }
+
+  await replySafe(interaction, buildMessage(null, true));
+  const message = await interaction.fetchReply();
+
+  const collector = message.createMessageComponentCollector({ time: 60000 });
+  collector.on('collect', async (btn) => {
+    if (btn.user.id !== userId) return btn.reply({ content: 'This is not your game!', ephemeral: true });
+    await btn.deferUpdate();
+
+    if (btn.customId === `bj_hit_${userId}`) {
+      playerCards.push(randomCard());
+      if (handValue(playerCards) > 21) {
+        registerStatTrigger(guildId, userId, 'losses');
+        await message.edit(buildMessage(`💥 BUST! You lose ${moneyStr(bet, currency)}`, false));
+        collector.stop();
+        return;
+      }
+      if (handValue(playerCards) === 21) {
+        // Auto-stand on 21
+        btn.customId = `bj_stand_${userId}`;
+      } else {
+        await message.edit(buildMessage(null, true));
+        return;
+      }
+    }
+
+    if (btn.customId === `bj_double_${userId}`) {
+      addBalance(guildId, userId, -bet, currency.currency_id, 'game', 'blackjack:double');
+      bet *= 2;
+      playerCards.push(randomCard());
+      if (handValue(playerCards) > 21) {
+        registerStatTrigger(guildId, userId, 'losses');
+        await message.edit(buildMessage(`💥 BUST on double! -${moneyStr(bet, currency)}`, false));
+        collector.stop();
+        return;
+      }
+      // Fall through to stand logic
+    }
+
+    if (btn.customId === `bj_stand_${userId}` || btn.customId === `bj_double_${userId}`) {
+      // Dealer draws
+      while (handValue(dealerCards) < 17) dealerCards.push(randomCard());
+      const pVal = handValue(playerCards);
+      const dVal = handValue(dealerCards);
+
+      let status, win = false;
+      if (dVal > 21) {
+        const payout = Math.floor(bet * 2 * economyMultiplier(guildId));
+        addBalance(guildId, userId, payout, currency.currency_id, 'game', 'blackjack:dealer_bust');
+        status = `🎉 Dealer busts! WIN +${moneyStr(payout, currency)}`;
+        win = true;
+      } else if (pVal > dVal) {
+        const payout = Math.floor(bet * 2 * economyMultiplier(guildId));
+        addBalance(guildId, userId, payout, currency.currency_id, 'game', 'blackjack:win');
+        status = `🎉 YOU WIN! +${moneyStr(payout, currency)}`;
+        win = true;
+      } else if (pVal === dVal) {
+        addBalance(guildId, userId, bet, currency.currency_id, 'game', 'blackjack:push');
+        status = `🤝 PUSH — bet returned`;
+      } else {
+        status = `😞 DEALER WINS — you lose ${moneyStr(bet, currency)}`;
+      }
+
+      registerStatTrigger(guildId, userId, win ? 'wins' : 'losses');
+      if (win) unlockAchievement(guildId, userId, 'first_win');
+      addXp(guildId, userId, win ? rand(25, 60) : rand(5, 15));
+      await message.edit(buildMessage(status, false));
+      collector.stop();
+    }
+  });
+
+  collector.on('end', async (_, reason) => {
+    if (reason === 'time') {
+      registerStatTrigger(guildId, userId, 'losses');
+      await message.edit(buildMessage('⏰ Timed out — bet forfeited', false)).catch(() => null);
+    }
+  });
+}
+
+// ------------------------------
 // Event handling
 // ------------------------------
 client.once(Events.ClientReady, () => {
   console.log(`✓ Bot ready as ${client.user?.tag}`);
-  console.log(`✓ Commands will be registered on first interaction`);
+});
+
+// Defer slash commands
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (interaction.isCommand() && !interaction.deferred && !interaction.replied) {
+    await interaction.deferReply({ ephemeral: false }).catch(() => null);
+  }
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isCommand()) return;
-  
-  // Register commands on demand
-  const commands = await buildCommands();
+
+  const commands = buildCommands();
   const cmd = commands.find(c => c.name === interaction.commandName);
-  
   if (!cmd) return;
-  
+
   try {
     await cmd.execute(interaction);
   } catch (err) {
     console.error(`✗ Command error:`, err);
-    const payload = { content: '❌ An error occurred', ephemeral: true };
+    const payload = { content: '❌ An error occurred. Please try again.' };
     if (interaction.replied || interaction.deferred) {
       await interaction.editReply(payload).catch(() => null);
     } else {
-      await interaction.reply(payload).catch(() => null);
+      await interaction.reply({ ...payload, ephemeral: true }).catch(() => null);
     }
-  }
-});
-
-// Defer all interactions immediately
-client.on(Events.InteractionCreate, async (interaction) => {
-  if ((interaction.isCommand() || interaction.isModalSubmit()) && !interaction.deferred && !interaction.replied) {
-    await interaction.deferReply({ ephemeral: false }).catch(() => null);
   }
 });
 
 // Register commands once client is ready
 client.on(Events.ClientReady, async () => {
   if (!TOKEN || !CLIENT_ID) return;
-  const commands = await buildCommands();
+  const commands = buildCommands();
   const rest = new (require('discord.js').REST)({ version: '10' }).setToken(TOKEN);
-  
+
   try {
+    const body = commands.map(c => c.data.toJSON());
     if (GUILD_ID) {
-      await rest.put(`/applications/${CLIENT_ID}/guilds/${GUILD_ID}/commands`, { body: commands.map(c => c.data.toJSON()) });
-      console.log(`✓ Registered ${commands.length} commands to guild`);
+      await rest.put(`/applications/${CLIENT_ID}/guilds/${GUILD_ID}/commands`, { body });
+      console.log(`✓ Registered ${commands.length} commands to guild ${GUILD_ID}`);
     } else {
-      await rest.put(`/applications/${CLIENT_ID}/commands`, { body: commands.map(c => c.data.toJSON()) });
+      await rest.put(`/applications/${CLIENT_ID}/commands`, { body });
       console.log(`✓ Registered ${commands.length} global commands`);
     }
   } catch (err) {
@@ -1266,285 +1834,400 @@ client.on(Events.ClientReady, async () => {
   }
 });
 
-async function buildCommands() {
+function buildCommands() {
   return [
-    // Betting games
+    // ── Casino Games ──
     {
+      name: 'flip',
       data: new SlashCommandBuilder()
         .setName('flip')
-        .setDescription('Play coin flip')
+        .setDescription('🪙 Flip a coin — heads or tails?')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1))
-        .addStringOption(opt => opt.setName('guess').setDescription('heads or tails').setRequired(true).addChoices({ name: 'heads', value: 'heads' }, { name: 'tails', value: 'tails' })),
-      execute: async (i) => {
-        const bet = i.options.getInteger('bet');
-        const guess = i.options.getString('guess');
-        await showCoinFlip(i, bet, guess);
-      },
+        .addStringOption(opt => opt.setName('guess').setDescription('Your call').setRequired(true)
+          .addChoices({ name: '🟡 Heads', value: 'heads' }, { name: '⚪ Tails', value: 'tails' })),
+      execute: async (i) => showCoinFlip(i, i.options.getInteger('bet'), i.options.getString('guess')),
     },
     {
+      name: 'dice',
       data: new SlashCommandBuilder()
         .setName('dice')
-        .setDescription('Roll the dice')
+        .setDescription('🎲 Roll the dice — pick a number')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1))
-        .addIntegerOption(opt => opt.setName('target').setDescription('1-6').setRequired(true).setMinValue(1).setMaxValue(6)),
-      execute: async (i) => {
-        const bet = i.options.getInteger('bet');
-        const target = i.options.getInteger('target');
-        await showDice(i, bet, target);
-      },
+        .addIntegerOption(opt => opt.setName('target').setDescription('Pick 1-6').setRequired(true).setMinValue(1).setMaxValue(6)),
+      execute: async (i) => showDice(i, i.options.getInteger('bet'), i.options.getInteger('target')),
     },
     {
+      name: 'slots',
       data: new SlashCommandBuilder()
         .setName('slots')
-        .setDescription('Spin the slots')
+        .setDescription('🎰 Spin the slot machine')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1)),
-      execute: async (i) => {
-        const bet = i.options.getInteger('bet');
-        await showSlots(i, bet);
-      },
+      execute: async (i) => showSlots(i, i.options.getInteger('bet')),
     },
     {
+      name: 'blackjack',
+      data: new SlashCommandBuilder()
+        .setName('blackjack')
+        .setDescription('🃏 Play blackjack with interactive Hit/Stand/Double')
+        .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1)),
+      execute: async (i) => showBlackjack(i, i.options.getInteger('bet')),
+    },
+    {
+      name: 'crash',
       data: new SlashCommandBuilder()
         .setName('crash')
-        .setDescription('Play crash')
+        .setDescription('📈 Ride the crash curve')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1)),
-      execute: async (i) => {
-        const bet = i.options.getInteger('bet');
-        await showCrash(i, bet);
-      },
+      execute: async (i) => showCrash(i, i.options.getInteger('bet')),
     },
     {
+      name: 'wheel',
       data: new SlashCommandBuilder()
         .setName('wheel')
-        .setDescription('Spin the wheel')
+        .setDescription('🎡 Spin the wheel of fortune')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1)),
-      execute: async (i) => {
-        const bet = i.options.getInteger('bet');
-        await showWheel(i, bet);
-      },
+      execute: async (i) => showWheel(i, i.options.getInteger('bet')),
     },
     {
+      name: 'treasure',
       data: new SlashCommandBuilder()
         .setName('treasure')
-        .setDescription('Hunt for treasure')
+        .setDescription('💎 Hunt for buried treasure')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1)),
-      execute: async (i) => {
-        const bet = i.options.getInteger('bet');
-        await showTreasure(i, bet);
-      },
+      execute: async (i) => showTreasure(i, i.options.getInteger('bet')),
     },
     {
+      name: 'higher',
       data: new SlashCommandBuilder()
         .setName('higher')
-        .setDescription('Higher or Lower card game')
+        .setDescription('🂠 Higher or Lower card game')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1))
-        .addStringOption(opt => opt.setName('guess').setDescription('higher, lower, or equal').setRequired(true).addChoices({ name: 'higher', value: 'higher' }, { name: 'lower', value: 'lower' }, { name: 'equal', value: 'equal' })),
-      execute: async (i) => {
-        const bet = i.options.getInteger('bet');
-        const guess = i.options.getString('guess');
-        await showHigherLower(i, bet, guess);
-      },
+        .addStringOption(opt => opt.setName('guess').setDescription('Your prediction').setRequired(true)
+          .addChoices({ name: '⬆️ Higher', value: 'higher' }, { name: '⬇️ Lower', value: 'lower' }, { name: '↔️ Equal', value: 'equal' })),
+      execute: async (i) => showHigherLower(i, i.options.getInteger('bet'), i.options.getString('guess')),
     },
     {
+      name: 'rps',
       data: new SlashCommandBuilder()
         .setName('rps')
-        .setDescription('Rock Paper Scissors')
+        .setDescription('✊ Rock Paper Scissors')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1))
-        .addStringOption(opt => opt.setName('choice').setDescription('rock, paper, or scissors').setRequired(true).addChoices({ name: 'rock', value: 'rock' }, { name: 'paper', value: 'paper' }, { name: 'scissors', value: 'scissors' })),
-      execute: async (i) => {
-        const bet = i.options.getInteger('bet');
-        const choice = i.options.getString('choice');
-        await showRPS(i, bet, choice);
-      },
+        .addStringOption(opt => opt.setName('choice').setDescription('Your move').setRequired(true)
+          .addChoices({ name: '✊ Rock', value: 'rock' }, { name: '✋ Paper', value: 'paper' }, { name: '✌️ Scissors', value: 'scissors' })),
+      execute: async (i) => showRPS(i, i.options.getInteger('bet'), i.options.getString('choice')),
     },
     {
+      name: 'limbo',
       data: new SlashCommandBuilder()
         .setName('limbo')
-        .setDescription('Limbo game')
+        .setDescription('🧍 Limbo — set your target multiplier')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1))
-        .addNumberOption(opt => opt.setName('target').setDescription('Target multiplier (0-10)').setRequired(true).setMinValue(0.01).setMaxValue(10)),
-      execute: async (i) => {
-        const bet = i.options.getInteger('bet');
-        const target = i.options.getNumber('target');
-        await showLimbo(i, bet, target);
-      },
+        .addNumberOption(opt => opt.setName('target').setDescription('Target (0.01-10)').setRequired(true).setMinValue(0.01).setMaxValue(10)),
+      execute: async (i) => showLimbo(i, i.options.getInteger('bet'), i.options.getNumber('target')),
     },
     {
+      name: 'lucky',
       data: new SlashCommandBuilder()
         .setName('lucky')
-        .setDescription('Lucky Number game')
+        .setDescription('🔢 Pick a lucky number 1-100')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1))
-        .addIntegerOption(opt => opt.setName('number').setDescription('1-100').setRequired(true).setMinValue(1).setMaxValue(100)),
-      execute: async (i) => {
-        const bet = i.options.getInteger('bet');
-        const number = i.options.getInteger('number');
-        await showLuckNumber(i, bet, number);
-      },
+        .addIntegerOption(opt => opt.setName('number').setDescription('Your number (1-100)').setRequired(true).setMinValue(1).setMaxValue(100)),
+      execute: async (i) => showLuckNumber(i, i.options.getInteger('bet'), i.options.getInteger('number')),
     },
     {
+      name: 'scratch',
       data: new SlashCommandBuilder()
         .setName('scratch')
-        .setDescription('Scratch cards')
+        .setDescription('🎫 Scratch a lottery card')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1)),
-      execute: async (i) => {
-        const bet = i.options.getInteger('bet');
-        await showScratch(i, bet);
-      },
+      execute: async (i) => showScratch(i, i.options.getInteger('bet')),
     },
     {
+      name: 'lottery',
       data: new SlashCommandBuilder()
         .setName('lottery')
-        .setDescription('Lottery draw')
+        .setDescription('🎟️ Buy a lottery ticket')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1)),
-      execute: async (i) => {
-        const bet = i.options.getInteger('bet');
-        await showLottery(i, bet);
-      },
+      execute: async (i) => showLottery(i, i.options.getInteger('bet')),
     },
-    // User commands
+
+    // ── Economy Commands ──
     {
+      name: 'balance',
       data: new SlashCommandBuilder()
         .setName('balance')
-        .setDescription('Check your balance')
+        .setDescription('💰 Check your balance')
         .addUserOption(opt => opt.setName('user').setDescription('User to check')),
       execute: async (i) => {
         const target = i.options.getUser('user') || i.user;
         const guildId = i.guildId;
         const user = getUser(guildId, target.id);
-        const wallet = user.wallet;
-        const e = baseEmbed('💰 Balance', 
-          `${userTag(target)}\n**Balance:** ${moneyStr(wallet.balance, user.wallet.currency || getCurrency(guildId, getGuildSettings(guildId).currency_id))}\n**Bank:** ${moneyStr(wallet.bank, user.wallet.currency || getCurrency(guildId, getGuildSettings(guildId).currency_id))}\n**Level:** ${user.level}\n**XP:** ${user.xp}`,
-          Colors.Gold);
+        const w = user.wallet;
+        const c = getCurrency(guildId, getGuildSettings(guildId).currency_id);
+        const winRate = (user.stats.wins || 0) + (user.stats.losses || 0) > 0
+          ? ((user.stats.wins || 0) / ((user.stats.wins || 0) + (user.stats.losses || 0)) * 100).toFixed(1)
+          : '0.0';
+        const e = baseEmbed('💰 Balance', '', Colors.Gold)
+          .addFields(
+            { name: '💵 Wallet', value: moneyStr(w.balance, c), inline: true },
+            { name: '🏦 Bank', value: moneyStr(w.bank, c), inline: true },
+            { name: '💎 Net Worth', value: moneyStr(w.balance + w.bank, c), inline: true },
+            { name: '📊 Level', value: `${user.level}`, inline: true },
+            { name: '✨ XP', value: `${user.xp}/${user.level * user.level * 100}`, inline: true },
+            { name: '🏆 Win Rate', value: `${winRate}%`, inline: true },
+          )
+          .setDescription(`${userTag(target)}'s account`);
         await i.editReply({ embeds: [e] });
       },
     },
     {
+      name: 'daily',
+      data: new SlashCommandBuilder()
+        .setName('daily')
+        .setDescription('📅 Claim your daily reward'),
+      execute: async (i) => {
+        const guildId = i.guildId;
+        const userId = i.user.id;
+        const user = ensureUser(guildId, userId);
+        const currency = getCurrency(guildId, getGuildSettings(guildId).currency_id);
+        const lastDaily = user.last_daily || 0;
+        const elapsed = now() - lastDaily;
+
+        if (elapsed < 86400) {
+          const remaining = 86400 - elapsed;
+          const hours = Math.floor(remaining / 3600);
+          const mins = Math.floor((remaining % 3600) / 60);
+          return i.editReply({ embeds: [baseEmbed('⏰ Daily Cooldown', `Come back in **${hours}h ${mins}m**`, Colors.Yellow)] });
+        }
+
+        // Streak logic
+        let streak = user.daily_streak || 0;
+        if (elapsed < 172800) { streak += 1; } else { streak = 1; }
+        const base = 500 + streak * 100;
+        const bonus = Math.floor(base * (streak >= 7 ? 2 : streak >= 3 ? 1.5 : 1));
+        const total = Math.floor(bonus * economyMultiplier(guildId));
+
+        addBalance(guildId, userId, total, currency.currency_id, 'daily', `streak:${streak}`);
+        db.prepare('UPDATE users SET daily_streak = ?, last_daily = ? WHERE guild_id = ? AND user_id = ?')
+          .run(streak, now(), guildId, userId);
+        addXp(guildId, userId, rand(30, 80));
+
+        const streakBar = makeBar(Math.min(streak / 7, 1));
+        const e = baseEmbed('📅 Daily Reward', '', Colors.Green)
+          .addFields(
+            { name: '💰 Claimed', value: moneyStr(total, currency), inline: true },
+            { name: '🔥 Streak', value: `${streak} day${streak !== 1 ? 's' : ''}`, inline: true },
+            { name: 'Streak Progress', value: `${streakBar} ${streak}/7`, inline: false },
+          );
+        if (streak >= 7) e.setDescription('🌟 **WEEKLY BONUS ACTIVE — 2x rewards!**');
+        else if (streak >= 3) e.setDescription('🔥 **3-day streak — 1.5x bonus!**');
+        await i.editReply({ embeds: [e] });
+      },
+    },
+    {
+      name: 'deposit',
+      data: new SlashCommandBuilder()
+        .setName('deposit')
+        .setDescription('🏦 Deposit coins into your bank')
+        .addIntegerOption(opt => opt.setName('amount').setDescription('Amount (0 = all)').setRequired(true).setMinValue(0)),
+      execute: async (i) => {
+        const guildId = i.guildId;
+        const userId = i.user.id;
+        ensureUser(guildId, userId);
+        const currency = getCurrency(guildId, getGuildSettings(guildId).currency_id);
+        const wallet = getWallet(guildId, userId, currency.currency_id);
+        let amount = i.options.getInteger('amount');
+        if (amount === 0) amount = wallet.balance;
+        if (amount <= 0 || amount > wallet.balance) {
+          return i.editReply({ embeds: [baseEmbed('❌ Invalid', `You only have ${moneyStr(wallet.balance, currency)} in your wallet.`, Colors.Red)] });
+        }
+        addBalance(guildId, userId, -amount, currency.currency_id, 'deposit', '');
+        addBank(guildId, userId, amount, currency.currency_id, 'deposit', '');
+        const w = getWallet(guildId, userId, currency.currency_id);
+        await i.editReply({ embeds: [baseEmbed('🏦 Deposited',
+          `Deposited ${moneyStr(amount, currency)}\n\n💵 Wallet: ${moneyStr(w.balance, currency)}\n🏦 Bank: ${moneyStr(w.bank, currency)}`,
+          Colors.Green)] });
+      },
+    },
+    {
+      name: 'withdraw',
+      data: new SlashCommandBuilder()
+        .setName('withdraw')
+        .setDescription('💵 Withdraw coins from your bank')
+        .addIntegerOption(opt => opt.setName('amount').setDescription('Amount (0 = all)').setRequired(true).setMinValue(0)),
+      execute: async (i) => {
+        const guildId = i.guildId;
+        const userId = i.user.id;
+        ensureUser(guildId, userId);
+        const currency = getCurrency(guildId, getGuildSettings(guildId).currency_id);
+        const wallet = getWallet(guildId, userId, currency.currency_id);
+        let amount = i.options.getInteger('amount');
+        if (amount === 0) amount = wallet.bank;
+        if (amount <= 0 || amount > wallet.bank) {
+          return i.editReply({ embeds: [baseEmbed('❌ Invalid', `You only have ${moneyStr(wallet.bank, currency)} in your bank.`, Colors.Red)] });
+        }
+        addBank(guildId, userId, -amount, currency.currency_id, 'withdraw', '');
+        addBalance(guildId, userId, amount, currency.currency_id, 'withdraw', '');
+        const w = getWallet(guildId, userId, currency.currency_id);
+        await i.editReply({ embeds: [baseEmbed('💵 Withdrawn',
+          `Withdrew ${moneyStr(amount, currency)}\n\n💵 Wallet: ${moneyStr(w.balance, currency)}\n🏦 Bank: ${moneyStr(w.bank, currency)}`,
+          Colors.Green)] });
+      },
+    },
+    {
+      name: 'stats',
       data: new SlashCommandBuilder()
         .setName('stats')
-        .setDescription('View your stats')
+        .setDescription('📊 View your gambling stats')
         .addUserOption(opt => opt.setName('user').setDescription('User to check')),
       execute: async (i) => {
         const target = i.options.getUser('user') || i.user;
         const guildId = i.guildId;
         const user = getUser(guildId, target.id);
-        const stats = user.stats;
-        const fields = [
-          { name: 'Games Played', value: String(stats.games_played || 0), inline: true },
-          { name: 'Wins', value: String(stats.wins || 0), inline: true },
-          { name: 'Losses', value: String(stats.losses || 0), inline: true },
-          { name: 'Total Bet', value: moneyStr(stats.bet_total || 0, user.wallet.currency || getCurrency(guildId, getGuildSettings(guildId).currency_id)), inline: true },
-          { name: 'Biggest Win', value: moneyStr(stats.biggest_win || 0, user.wallet.currency || getCurrency(guildId, getGuildSettings(guildId).currency_id)), inline: true },
-          { name: 'Biggest Loss', value: moneyStr(stats.biggest_loss || 0, user.wallet.currency || getCurrency(guildId, getGuildSettings(guildId).currency_id)), inline: true },
-        ];
-        const e = baseEmbed('📊 Stats', `${userTag(target)}`).addFields(fields);
+        const s = user.stats;
+        const c = getCurrency(guildId, getGuildSettings(guildId).currency_id);
+        const e = baseEmbed('📊 Stats', `${userTag(target)}'s statistics`)
+          .addFields(
+            { name: '🎮 Games', value: formatNumber(s.games_played || 0), inline: true },
+            { name: '✅ Wins', value: formatNumber(s.wins || 0), inline: true },
+            { name: '❌ Losses', value: formatNumber(s.losses || 0), inline: true },
+            { name: '💰 Total Bet', value: moneyStr(s.bet_total || 0, c), inline: true },
+            { name: '🏆 Best Win', value: moneyStr(s.biggest_win || 0, c), inline: true },
+            { name: '💔 Worst Loss', value: moneyStr(s.biggest_loss || 0, c), inline: true },
+          );
         await i.editReply({ embeds: [e] });
       },
     },
     {
+      name: 'leaderboard',
       data: new SlashCommandBuilder()
         .setName('leaderboard')
-        .setDescription('View the leaderboard'),
+        .setDescription('🏆 View the top players'),
       execute: async (i) => {
         const guildId = i.guildId;
-        const rows = db.prepare(`
-          SELECT user_id, stats_json, xp, level FROM users WHERE guild_id = ? ORDER BY json_extract(stats_json, '$.bet_total') DESC LIMIT 10
-        `).all(guildId);
-        
+        const c = getCurrency(guildId, getGuildSettings(guildId).currency_id);
+        const rows = db.prepare(
+          `SELECT w.user_id, w.balance, w.bank, u.level FROM wallets w
+           JOIN users u ON u.guild_id = w.guild_id AND u.user_id = w.user_id
+           WHERE w.guild_id = ? AND w.currency_id = ?
+           ORDER BY (w.balance + w.bank) DESC LIMIT 10`
+        ).all(guildId, c.currency_id);
+
+        const medals = ['🥇', '🥈', '🥉'];
         const lines = rows.map((row, idx) => {
-          const stats = safeJsonParse(row.stats_json || '{}', {});
-          return `${idx + 1}. <@${row.user_id}> - ${formatNumber(stats.bet_total || 0)} total bet`;
+          const medal = medals[idx] || `\`${idx + 1}.\``;
+          return `${medal} <@${row.user_id}> — ${moneyStr(row.balance + row.bank, c)} (Lv.${row.level})`;
         });
-        
-        const e = baseEmbed('🏆 Leaderboard', lines.join('\n') || 'No data');
+
+        const e = baseEmbed('🏆 Leaderboard', lines.join('\n') || 'No players yet!');
         await i.editReply({ embeds: [e] });
       },
     },
-    // Admin commands
     {
+      name: 'help',
+      data: new SlashCommandBuilder()
+        .setName('help')
+        .setDescription('📖 List all commands'),
+      execute: async (i) => {
+        const e = baseEmbed('📖 Casino Bot — Commands', '', Colors.Gold)
+          .addFields(
+            { name: '🎰 Casino Games', value: '`/flip` `/dice` `/slots` `/blackjack` `/crash` `/wheel` `/treasure` `/higher` `/rps` `/limbo` `/lucky` `/scratch` `/lottery`' },
+            { name: '💰 Economy', value: '`/balance` `/daily` `/deposit` `/withdraw` `/stats` `/leaderboard`' },
+            { name: '🛠️ Admin', value: '`/admin_give` `/admin_remove` `/admin_set` `/admin_settings`' },
+          )
+          .setFooter({ text: '🪙 Fake economy only — no real money' });
+        await i.editReply({ embeds: [e] });
+      },
+    },
+
+    // ── Admin Commands ──
+    {
+      name: 'admin_give',
       data: new SlashCommandBuilder()
         .setName('admin_give')
-        .setDescription('Give currency to a user')
-        .addUserOption(opt => opt.setName('user').setDescription('User to give to').setRequired(true))
+        .setDescription('💸 Give currency to a user')
+        .addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true))
         .addIntegerOption(opt => opt.setName('amount').setDescription('Amount').setRequired(true)),
       execute: async (i) => {
-        if (!isAdmin(i)) return i.editReply({ content: '❌ Not an admin', ephemeral: true });
+        if (!isAdmin(i)) return i.editReply({ content: '❌ Not an admin' });
         const target = i.options.getUser('user');
         const amount = i.options.getInteger('amount');
         const guildId = i.guildId;
-        const currency = getCurrency(guildId, getGuildSettings(guildId).currency_id);
-        addBalance(guildId, target.id, amount, currency.currency_id, 'admin_give', `Given by ${i.user.tag}`);
-        logAudit(guildId, i.user.id, 'admin_give', target.id, `Gave ${amount}`);
-        const e = baseEmbed('✅ Sent', `Gave ${moneyStr(amount, currency)} to ${userTag(target)}`);
-        await i.editReply({ embeds: [e] });
+        const c = getCurrency(guildId, getGuildSettings(guildId).currency_id);
+        ensureUser(guildId, target.id);
+        addBalance(guildId, target.id, amount, c.currency_id, 'admin_give', `By ${i.user.tag}`);
+        logAudit(guildId, i.user.id, 'admin_give', target.id, `${amount}`);
+        await i.editReply({ embeds: [baseEmbed('✅ Sent', `Gave ${moneyStr(amount, c)} to ${userTag(target)}`, Colors.Green)] });
       },
     },
     {
+      name: 'admin_remove',
       data: new SlashCommandBuilder()
         .setName('admin_remove')
-        .setDescription('Remove currency from a user')
-        .addUserOption(opt => opt.setName('user').setDescription('User to remove from').setRequired(true))
+        .setDescription('🗑️ Remove currency from a user')
+        .addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true))
         .addIntegerOption(opt => opt.setName('amount').setDescription('Amount').setRequired(true)),
       execute: async (i) => {
-        if (!isAdmin(i)) return i.editReply({ content: '❌ Not an admin', ephemeral: true });
+        if (!isAdmin(i)) return i.editReply({ content: '❌ Not an admin' });
         const target = i.options.getUser('user');
         const amount = i.options.getInteger('amount');
         const guildId = i.guildId;
-        const currency = getCurrency(guildId, getGuildSettings(guildId).currency_id);
-        addBalance(guildId, target.id, -amount, currency.currency_id, 'admin_remove', `Removed by ${i.user.tag}`);
-        logAudit(guildId, i.user.id, 'admin_remove', target.id, `Removed ${amount}`);
-        const e = baseEmbed('✅ Removed', `Removed ${moneyStr(amount, currency)} from ${userTag(target)}`);
-        await i.editReply({ embeds: [e] });
+        const c = getCurrency(guildId, getGuildSettings(guildId).currency_id);
+        addBalance(guildId, target.id, -amount, c.currency_id, 'admin_remove', `By ${i.user.tag}`);
+        logAudit(guildId, i.user.id, 'admin_remove', target.id, `${amount}`);
+        await i.editReply({ embeds: [baseEmbed('✅ Removed', `Removed ${moneyStr(amount, c)} from ${userTag(target)}`, Colors.Green)] });
       },
     },
     {
+      name: 'admin_set',
       data: new SlashCommandBuilder()
         .setName('admin_set')
-        .setDescription('Set a user\'s balance')
+        .setDescription('⚙️ Set a user\'s balance')
         .addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true))
         .addIntegerOption(opt => opt.setName('amount').setDescription('New balance').setRequired(true)),
       execute: async (i) => {
-        if (!isAdmin(i)) return i.editReply({ content: '❌ Not an admin', ephemeral: true });
+        if (!isAdmin(i)) return i.editReply({ content: '❌ Not an admin' });
         const target = i.options.getUser('user');
         const amount = i.options.getInteger('amount');
         const guildId = i.guildId;
-        const currency = getCurrency(guildId, getGuildSettings(guildId).currency_id);
-        setBalance(guildId, target.id, amount, currency.currency_id);
-        logAudit(guildId, i.user.id, 'admin_set', target.id, `Set balance to ${amount}`);
-        const e = baseEmbed('✅ Set', `Set balance to ${moneyStr(amount, currency)} for ${userTag(target)}`);
-        await i.editReply({ embeds: [e] });
+        const c = getCurrency(guildId, getGuildSettings(guildId).currency_id);
+        ensureUser(guildId, target.id);
+        setBalance(guildId, target.id, amount, c.currency_id);
+        logAudit(guildId, i.user.id, 'admin_set', target.id, `${amount}`);
+        await i.editReply({ embeds: [baseEmbed('✅ Set', `Balance set to ${moneyStr(amount, c)} for ${userTag(target)}`, Colors.Green)] });
       },
     },
     {
+      name: 'admin_settings',
       data: new SlashCommandBuilder()
         .setName('admin_settings')
-        .setDescription('View or modify server settings')
+        .setDescription('⚙️ Server economy settings')
         .addSubcommand(sub => sub.setName('view').setDescription('View current settings'))
         .addSubcommand(sub => sub.setName('houseedge').setDescription('Set house edge').addNumberOption(opt => opt.setName('value').setRequired(true).setMinValue(0).setMaxValue(1)))
         .addSubcommand(sub => sub.setName('multiplier').setDescription('Set payout multiplier').addNumberOption(opt => opt.setName('value').setRequired(true).setMinValue(0.1).setMaxValue(10))),
       execute: async (i) => {
-        if (!isAdmin(i)) return i.editReply({ content: '❌ Not an admin', ephemeral: true });
+        if (!isAdmin(i)) return i.editReply({ content: '❌ Not an admin' });
         const guildId = i.guildId;
         const sub = i.options.getSubcommand();
-        
+
         if (sub === 'view') {
-          const settings = getGuildSettings(guildId);
-          const e = baseEmbed('⚙️ Server Settings',
-            `**Economy Name:** ${settings.economy_name}\n**House Edge:** ${(settings.house_edge * 100).toFixed(1)}%\n**Payout Multiplier:** ${settings.payout_multiplier}x`);
-          return i.editReply({ embeds: [e] });
+          const s = getGuildSettings(guildId);
+          return i.editReply({ embeds: [baseEmbed('⚙️ Settings',
+            `**Economy:** ${s.economy_name}\n**House Edge:** ${(s.house_edge * 100).toFixed(1)}%\n**Multiplier:** ${s.payout_multiplier}x`)] });
         }
-        
         if (sub === 'houseedge') {
           const value = i.options.getNumber('value');
-          stmt.setGuild.run({ guild_id: guildId, economy_name: getGuildSettings(guildId).economy_name, currency_id: getGuildSettings(guildId).currency_id, house_edge: value, payout_multiplier: getGuildSettings(guildId).payout_multiplier, locale: 'en' });
+          const s = getGuildSettings(guildId);
+          stmt.setGuild.run({ guild_id: guildId, economy_name: s.economy_name, currency_id: s.currency_id, house_edge: value, payout_multiplier: s.payout_multiplier, locale: 'en' });
           logAudit(guildId, i.user.id, 'set_house_edge', null, `${value}`);
-          return i.editReply({ content: `✅ House edge set to ${(value * 100).toFixed(1)}%` });
+          return i.editReply({ content: `✅ House edge → ${(value * 100).toFixed(1)}%` });
         }
-        
         if (sub === 'multiplier') {
           const value = i.options.getNumber('value');
-          stmt.setGuild.run({ guild_id: guildId, economy_name: getGuildSettings(guildId).economy_name, currency_id: getGuildSettings(guildId).currency_id, house_edge: getGuildSettings(guildId).house_edge, payout_multiplier: value, locale: 'en' });
+          const s = getGuildSettings(guildId);
+          stmt.setGuild.run({ guild_id: guildId, economy_name: s.economy_name, currency_id: s.currency_id, house_edge: s.house_edge, payout_multiplier: value, locale: 'en' });
           logAudit(guildId, i.user.id, 'set_multiplier', null, `${value}`);
-          return i.editReply({ content: `✅ Payout multiplier set to ${value}x` });
+          return i.editReply({ content: `✅ Payout multiplier → ${value}x` });
         }
       },
     },
@@ -1566,42 +2249,3 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
-// [Pterodactyl Daemon]: Checking server disk space usage, this could take a few seconds...
-// [Pterodactyl Daemon]: Updating process configuration files...
-// [Pterodactyl Daemon]: Ensuring file permissions are set correctly, this could take a few seconds...
-// container@pterodactyl~ Server marked as starting...
-// [Pterodactyl Daemon]: Pulling Docker container image, this could take a few minutes to complete...
-// Pulling from ptero-eggs/yolks 
-// Digest: sha256:c0bea1e94ab769f23d78958a47f8666d76430835f281db23c0b360a7a28ff27a 
-// Status: Image is up to date for ghcr.io/ptero-eggs/yolks:nodejs_22 
-// [Pterodactyl Daemon]: Finished pulling Docker container image
-// Node.js Version: v22.22.3
-// :/home/container$ if [[ -d .git ]] && [[ ${AUTO_UPDATE} == "1" ]]; then git pull; fi; if [[ ! -z ${NODE_PACKAGES} ]]; then /usr/local/bin/npm install ${NODE_PACKAGES}; fi; if [[ ! -z ${UNNODE_PACKAGES} ]]; then /usr/local/bin/npm uninstall ${UNNODE_PACKAGES}; fi; if [ -f /home/container/package.json ]; then /usr/local/bin/npm install; fi; if [[ "${MAIN_FILE}" == bot.js ]]; then /usr/local/bin/node "/home/container/${MAIN_FILE}" ${NODE_ARGS}; else /usr/local/bin/npx ts-node --esm "/home/container/${MAIN_FILE}" ${NODE_ARGS}; fi
-// 
-// up to date, audited 89 packages in 755ms
-// 
-// 19 packages are looking for funding
-//   run `npm fund` for details
-// 
-// found 0 vulnerabilities
-// npm warn allow-scripts 3 packages have install scripts not yet covered by allowScripts:
-// npm warn allow-scripts   better-sqlite3@12.10.0 (install: node-gyp rebuild)
-// npm warn allow-scripts   canvas@3.2.3 (install: node-gyp rebuild)
-// npm warn allow-scripts   sqlite3@6.0.1 (install: node-gyp rebuild)
-// npm warn allow-scripts
-// npm warn allow-scripts Run `npm approve-scripts --allow-scripts-pending` to review, or `npm approve-scripts <pkg>` to allow.
-// ✗ Database connection failed: The module '/home/container/node_modules/better-sqlite3/build/Release/better_sqlite3.node'
-// was compiled against a different Node.js version using
-// NODE_MODULE_VERSION 115. This version of Node.js requires
-// NODE_MODULE_VERSION 127. Please try re-compiling or re-installing
-// the module (for instance, using `npm rebuild` or `npm install`).
-// Attempting to repair database...
-// ✗ Failed to repair database: Module did not self-register: '/home/container/node_modules/better-sqlite3/build/Release/better_sqlite3.node'.
-// container@pterodactyl~ Server marked as offline...
-// [Pterodactyl Daemon]: ---------- Detected server process in a crashed state! ----------
-// [Pterodactyl Daemon]: Exit code: 1
-// [Pterodactyl Daemon]: Out of memory: false
-// [Pterodactyl Daemon]: Aborting automatic restart, last crash occurred less than 60 seconds ago.
-// 
-// FIX THIS BROOOOOOO, make it actually good bro, and make the games more interactive and satesfying to play.
-// 
