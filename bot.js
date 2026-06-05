@@ -1336,13 +1336,13 @@ async function runWagerGame(interaction, opts) {
   const wallet = getWallet(guildId, userId, currency.currency_id);
   
   if (!Number.isFinite(bet) || bet < minBet) {
-    return interaction.reply({ ephemeral: true, content: `# Invalid bet\nBet must be at least ${moneyStr(minBet, currency)}.` });
+    return interaction.reply({ flags: MessageFlags.Ephemeral, content: `# Invalid bet\nBet must be at least ${moneyStr(minBet, currency)}.` });
   }
   if (bet > maxBet) {
-    return interaction.reply({ ephemeral: true, content: `# Bet too high\nMaximum bet is ${moneyStr(maxBet, currency)}.` });
+    return interaction.reply({ flags: MessageFlags.Ephemeral, content: `# Bet too high\nMaximum bet is ${moneyStr(maxBet, currency)}.` });
   }
   if (wallet.balance < bet) {
-    return interaction.reply({ ephemeral: true, content: `# No funds\nYou only have ${moneyStr(wallet.balance, currency)}.` });
+    return interaction.reply({ flags: MessageFlags.Ephemeral, content: `# No funds\nYou only have ${moneyStr(wallet.balance, currency)}.` });
   }
 
   incrementStat(guildId, userId, 'games_played');
@@ -1450,7 +1450,7 @@ async function showSlots(interaction, bet) {
   const currency = getCurrency(interaction.guildId, getGuildSettings(interaction.guildId).currency_id);
   
   if (getWallet(interaction.guildId, interaction.user.id, currency.currency_id).balance < bet) {
-    return interaction.reply({ ephemeral: true, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
+    return interaction.reply({ flags: MessageFlags.Ephemeral, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
   }
   
   const net = Math.floor(payout * economyMultiplier(interaction.guildId)) - bet;
@@ -1470,7 +1470,7 @@ async function showSlots(interaction, bet) {
 async function showCrash(interaction, bet) {
   const currency = getCurrency(interaction.guildId, getGuildSettings(interaction.guildId).currency_id);
   if (getWallet(interaction.guildId, interaction.user.id, currency.currency_id).balance < bet) {
-    return interaction.reply({ ephemeral: true, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
+    return interaction.reply({ flags: MessageFlags.Ephemeral, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
   }
   
   let balance = getWallet(interaction.guildId, interaction.user.id, currency.currency_id).balance;
@@ -1497,7 +1497,7 @@ async function showCrash(interaction, bet) {
 async function showWheel(interaction, bet) {
   const currency = getCurrency(interaction.guildId, getGuildSettings(interaction.guildId).currency_id);
   if (getWallet(interaction.guildId, interaction.user.id, currency.currency_id).balance < bet) {
-    return interaction.reply({ ephemeral: true, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
+    return interaction.reply({ flags: MessageFlags.Ephemeral, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
   }
   
   const slot = pickWeighted([
@@ -1526,7 +1526,7 @@ async function showWheel(interaction, bet) {
 async function showTreasure(interaction, bet) {
   const currency = getCurrency(interaction.guildId, getGuildSettings(interaction.guildId).currency_id);
   if (getWallet(interaction.guildId, interaction.user.id, currency.currency_id).balance < bet) {
-    return interaction.reply({ ephemeral: true, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
+    return interaction.reply({ flags: MessageFlags.Ephemeral, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
   }
   
   const spots = Array.from({ length: 9 }, () => Math.random() < 0.15 ? '💎' : '⬛');
@@ -1552,7 +1552,7 @@ async function showRPS(interaction, bet, guess) {
   const currency = getCurrency(interaction.guildId, getGuildSettings(interaction.guildId).currency_id);
 
   if (getWallet(interaction.guildId, interaction.user.id, currency.currency_id).balance < bet) {
-    return interaction.reply({ ephemeral: true, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
+    return interaction.reply({ flags: MessageFlags.Ephemeral, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
   }
 
   const net = payout - bet;
@@ -1602,7 +1602,7 @@ async function showLuckNumber(interaction, bet, number) {
 async function showScratch(interaction, bet) {
   const currency = getCurrency(interaction.guildId, getGuildSettings(interaction.guildId).currency_id);
   if (getWallet(interaction.guildId, interaction.user.id, currency.currency_id).balance < bet) {
-    return interaction.reply({ ephemeral: true, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
+    return interaction.reply({ flags: MessageFlags.Ephemeral, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
   }
   
   const prize = pickWeighted([
@@ -1629,7 +1629,7 @@ async function showScratch(interaction, bet) {
 async function showLottery(interaction, bet) {
   const currency = getCurrency(interaction.guildId, getGuildSettings(interaction.guildId).currency_id);
   if (getWallet(interaction.guildId, interaction.user.id, currency.currency_id).balance < bet) {
-    return interaction.reply({ ephemeral: true, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
+    return interaction.reply({ flags: MessageFlags.Ephemeral, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
   }
   
   const tickets = Array.from({ length: 6 }, () => rand(1, 49));
@@ -1657,7 +1657,7 @@ async function showBlackjack(interaction, bet) {
   const wallet = getWallet(guildId, userId, currency.currency_id);
 
   if (wallet.balance < bet) {
-    return interaction.reply({ ephemeral: true, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
+    return interaction.reply({ flags: MessageFlags.Ephemeral, content: `# No funds\nYou need ${moneyStr(bet, currency)}.` });
   }
 
   addBalance(guildId, userId, -bet, currency.currency_id, 'game', 'blackjack:bet');
@@ -1707,7 +1707,7 @@ async function showBlackjack(interaction, bet) {
 
   const collector = message.createMessageComponentCollector({ time: 60000 });
   collector.on('collect', async (btn) => {
-    if (btn.user.id !== userId) return btn.reply({ content: 'This is not your game!', ephemeral: true });
+    if (btn.user.id !== userId) return btn.reply({ content: 'This is not your game!', flags: MessageFlags.Ephemeral });
     await btn.deferUpdate();
 
     if (btn.customId === `bj_hit_${userId}`) {
@@ -1790,7 +1790,7 @@ client.once(Events.ClientReady, () => {
 // Defer slash commands
 client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isCommand() && !interaction.deferred && !interaction.replied) {
-    await interaction.deferReply({ ephemeral: false }).catch(() => null);
+    await interaction.deferReply().catch(() => null);
   }
 });
 
@@ -1809,7 +1809,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.replied || interaction.deferred) {
       await interaction.editReply(payload).catch(() => null);
     } else {
-      await interaction.reply({ ...payload, ephemeral: true }).catch(() => null);
+      await interaction.reply({ ...payload, flags: MessageFlags.Ephemeral }).catch(() => null);
     }
   }
 });
@@ -1834,6 +1834,13 @@ client.on(Events.ClientReady, async () => {
   }
 });
 
+// Helper: get an integer option value whether Discord sends it as INTEGER or NUMBER type
+function getIntOption(options, name) {
+  const opt = options.get(name);
+  if (!opt) return null;
+  return Math.floor(Number(opt.value));
+}
+
 function buildCommands() {
   return [
     // ── Casino Games ──
@@ -1845,7 +1852,7 @@ function buildCommands() {
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1))
         .addStringOption(opt => opt.setName('guess').setDescription('Your call').setRequired(true)
           .addChoices({ name: '🟡 Heads', value: 'heads' }, { name: '⚪ Tails', value: 'tails' })),
-      execute: async (i) => showCoinFlip(i, i.options.getInteger('bet'), i.options.getString('guess')),
+      execute: async (i) => showCoinFlip(i, getIntOption(i.options, 'bet'), i.options.getString('guess')),
     },
     {
       name: 'dice',
@@ -1854,7 +1861,7 @@ function buildCommands() {
         .setDescription('🎲 Roll the dice — pick a number')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1))
         .addIntegerOption(opt => opt.setName('target').setDescription('Pick 1-6').setRequired(true).setMinValue(1).setMaxValue(6)),
-      execute: async (i) => showDice(i, i.options.getInteger('bet'), i.options.getInteger('target')),
+      execute: async (i) => showDice(i, getIntOption(i.options, 'bet'), getIntOption(i.options, 'target')),
     },
     {
       name: 'slots',
@@ -1862,7 +1869,7 @@ function buildCommands() {
         .setName('slots')
         .setDescription('🎰 Spin the slot machine')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1)),
-      execute: async (i) => showSlots(i, i.options.getInteger('bet')),
+      execute: async (i) => showSlots(i, getIntOption(i.options, 'bet')),
     },
     {
       name: 'blackjack',
@@ -1870,7 +1877,7 @@ function buildCommands() {
         .setName('blackjack')
         .setDescription('🃏 Play blackjack with interactive Hit/Stand/Double')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1)),
-      execute: async (i) => showBlackjack(i, i.options.getInteger('bet')),
+      execute: async (i) => showBlackjack(i, getIntOption(i.options, 'bet')),
     },
     {
       name: 'crash',
@@ -1878,7 +1885,7 @@ function buildCommands() {
         .setName('crash')
         .setDescription('📈 Ride the crash curve')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1)),
-      execute: async (i) => showCrash(i, i.options.getInteger('bet')),
+      execute: async (i) => showCrash(i, getIntOption(i.options, 'bet')),
     },
     {
       name: 'wheel',
@@ -1886,7 +1893,7 @@ function buildCommands() {
         .setName('wheel')
         .setDescription('🎡 Spin the wheel of fortune')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1)),
-      execute: async (i) => showWheel(i, i.options.getInteger('bet')),
+      execute: async (i) => showWheel(i, getIntOption(i.options, 'bet')),
     },
     {
       name: 'treasure',
@@ -1894,7 +1901,7 @@ function buildCommands() {
         .setName('treasure')
         .setDescription('💎 Hunt for buried treasure')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1)),
-      execute: async (i) => showTreasure(i, i.options.getInteger('bet')),
+      execute: async (i) => showTreasure(i, getIntOption(i.options, 'bet')),
     },
     {
       name: 'higher',
@@ -1904,7 +1911,7 @@ function buildCommands() {
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1))
         .addStringOption(opt => opt.setName('guess').setDescription('Your prediction').setRequired(true)
           .addChoices({ name: '⬆️ Higher', value: 'higher' }, { name: '⬇️ Lower', value: 'lower' }, { name: '↔️ Equal', value: 'equal' })),
-      execute: async (i) => showHigherLower(i, i.options.getInteger('bet'), i.options.getString('guess')),
+      execute: async (i) => showHigherLower(i, getIntOption(i.options, 'bet'), i.options.getString('guess')),
     },
     {
       name: 'rps',
@@ -1914,7 +1921,7 @@ function buildCommands() {
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1))
         .addStringOption(opt => opt.setName('choice').setDescription('Your move').setRequired(true)
           .addChoices({ name: '✊ Rock', value: 'rock' }, { name: '✋ Paper', value: 'paper' }, { name: '✌️ Scissors', value: 'scissors' })),
-      execute: async (i) => showRPS(i, i.options.getInteger('bet'), i.options.getString('choice')),
+      execute: async (i) => showRPS(i, getIntOption(i.options, 'bet'), i.options.getString('choice')),
     },
     {
       name: 'limbo',
@@ -1923,7 +1930,7 @@ function buildCommands() {
         .setDescription('🧍 Limbo — set your target multiplier')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1))
         .addNumberOption(opt => opt.setName('target').setDescription('Target (0.01-10)').setRequired(true).setMinValue(0.01).setMaxValue(10)),
-      execute: async (i) => showLimbo(i, i.options.getInteger('bet'), i.options.getNumber('target')),
+      execute: async (i) => showLimbo(i, getIntOption(i.options, 'bet'), i.options.getNumber('target')),
     },
     {
       name: 'lucky',
@@ -1932,7 +1939,7 @@ function buildCommands() {
         .setDescription('🔢 Pick a lucky number 1-100')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1))
         .addIntegerOption(opt => opt.setName('number').setDescription('Your number (1-100)').setRequired(true).setMinValue(1).setMaxValue(100)),
-      execute: async (i) => showLuckNumber(i, i.options.getInteger('bet'), i.options.getInteger('number')),
+      execute: async (i) => showLuckNumber(i, getIntOption(i.options, 'bet'), getIntOption(i.options, 'number')),
     },
     {
       name: 'scratch',
@@ -1940,7 +1947,7 @@ function buildCommands() {
         .setName('scratch')
         .setDescription('🎫 Scratch a lottery card')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1)),
-      execute: async (i) => showScratch(i, i.options.getInteger('bet')),
+      execute: async (i) => showScratch(i, getIntOption(i.options, 'bet')),
     },
     {
       name: 'lottery',
@@ -1948,7 +1955,7 @@ function buildCommands() {
         .setName('lottery')
         .setDescription('🎟️ Buy a lottery ticket')
         .addIntegerOption(opt => opt.setName('bet').setDescription('Bet amount').setRequired(true).setMinValue(1)),
-      execute: async (i) => showLottery(i, i.options.getInteger('bet')),
+      execute: async (i) => showLottery(i, getIntOption(i.options, 'bet')),
     },
 
     // ── Economy Commands ──
@@ -2036,7 +2043,7 @@ function buildCommands() {
         ensureUser(guildId, userId);
         const currency = getCurrency(guildId, getGuildSettings(guildId).currency_id);
         const wallet = getWallet(guildId, userId, currency.currency_id);
-        let amount = i.options.getInteger('amount');
+        let amount = getIntOption(i.options, 'amount');
         if (amount === 0) amount = wallet.balance;
         if (amount <= 0 || amount > wallet.balance) {
           return i.editReply({ embeds: [baseEmbed('❌ Invalid', `You only have ${moneyStr(wallet.balance, currency)} in your wallet.`, Colors.Red)] });
@@ -2061,7 +2068,7 @@ function buildCommands() {
         ensureUser(guildId, userId);
         const currency = getCurrency(guildId, getGuildSettings(guildId).currency_id);
         const wallet = getWallet(guildId, userId, currency.currency_id);
-        let amount = i.options.getInteger('amount');
+        let amount = getIntOption(i.options, 'amount');
         if (amount === 0) amount = wallet.bank;
         if (amount <= 0 || amount > wallet.bank) {
           return i.editReply({ embeds: [baseEmbed('❌ Invalid', `You only have ${moneyStr(wallet.bank, currency)} in your bank.`, Colors.Red)] });
@@ -2151,7 +2158,7 @@ function buildCommands() {
       execute: async (i) => {
         if (!isAdmin(i)) return i.editReply({ content: '❌ Not an admin' });
         const target = i.options.getUser('user');
-        const amount = i.options.getInteger('amount');
+        const amount = getIntOption(i.options, 'amount');
         const guildId = i.guildId;
         const c = getCurrency(guildId, getGuildSettings(guildId).currency_id);
         ensureUser(guildId, target.id);
@@ -2170,7 +2177,7 @@ function buildCommands() {
       execute: async (i) => {
         if (!isAdmin(i)) return i.editReply({ content: '❌ Not an admin' });
         const target = i.options.getUser('user');
-        const amount = i.options.getInteger('amount');
+        const amount = getIntOption(i.options, 'amount');
         const guildId = i.guildId;
         const c = getCurrency(guildId, getGuildSettings(guildId).currency_id);
         addBalance(guildId, target.id, -amount, c.currency_id, 'admin_remove', `By ${i.user.tag}`);
@@ -2188,7 +2195,7 @@ function buildCommands() {
       execute: async (i) => {
         if (!isAdmin(i)) return i.editReply({ content: '❌ Not an admin' });
         const target = i.options.getUser('user');
-        const amount = i.options.getInteger('amount');
+        const amount = getIntOption(i.options, 'amount');
         const guildId = i.guildId;
         const c = getCurrency(guildId, getGuildSettings(guildId).currency_id);
         ensureUser(guildId, target.id);
