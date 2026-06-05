@@ -1789,12 +1789,6 @@ client.once(Events.ClientReady, () => {
 
 // Defer slash commands
 client.on(Events.InteractionCreate, async (interaction) => {
-  if (interaction.isCommand() && !interaction.deferred && !interaction.replied) {
-    await interaction.deferReply().catch(() => null);
-  }
-});
-
-client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isCommand()) return;
 
   const commands = buildCommands();
@@ -1802,6 +1796,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (!cmd) return;
 
   try {
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply();
+    }
     await cmd.execute(interaction);
   } catch (err) {
     console.error(`✗ Command error:`, err);
